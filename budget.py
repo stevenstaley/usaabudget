@@ -41,6 +41,7 @@ def drop_transfers(df: pd.DataFrame) -> pd.DataFrame:
 def add_month_column(df: pd.DataFrame, date_column: str = "Date") -> pd.DataFrame:
     df = df.copy()
     df["month"] = df[date_column].dt.to_period("M")
+    df["time"] = df["month"].dt.to_timestamp()
     return df
 
 
