@@ -1,97 +1,107 @@
 import pandas as pd
+from pathlib import Path
 from sqlalchemy import create_engine
-import os
-from stuff import DBUSER, DBPSWD, DBIP
+from stuff import DBIP, DBPSWD, DBUSER
 
 DB_PORT = "3306"
 DB_NAME = "budget"
+CSV_FILES = {
+    "main": ("main.csv", "Main"),
+    "bills": ("bills.csv", "Bills"),
+    "savings": ("savings.csv", "Main Savings"),
+}
+FILTER_PATTERNS = ["Therapy Trails", "Childcare"]
 
-engine = create_engine(
-    f"mysql+pymysql://{DBUSER}:{DBPSWD}@{DBIP}:{DB_PORT}/{DB_NAME}"
-)
 
-def post_to_sql(df, table):
-    df.to_sql(
-    table,
-    engine,
-    if_exists="replace",
-    index=False
-)
+def build_engine(user: str, password: str, host: str, port: str, database: str):
+    url = f"mysql+pymysql://{user}:{password}@{host}:{port}/{database}"
+    return create_engine(url)
 
-main = pd.read_csv('main.csv')
-main['Account'] = "Main"
 
-bills = pd.read_csv('bills.csv')
-bills['Account'] = "Bills"
+def read_budget_files(data_dir: Path) -> pd.DataFrame:
+    frames = []
+    for _, (filename, account) in CSV_FILES.items():
+        csv_path = data_dir / filename
+        df = pd.read_csv(csv_path)
+        df["Account"] = account
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
 
-savings = pd.read_csv('savings.csv')
-savings['Account'] = "Main Savings"
 
-full = pd.concat([bills, main, savings])
+def normalize_dates(df: pd.DataFrame, date_column: str = "Date") -> pd.DataFrame:
+    df = df.copy()
+    df[date_column] = pd.to_datetime(df[date_column])
+    return df
 
-full['Date'] = pd.to_datetime(full['Date'])
 
-df_clean = full[full["Category"] != "Transfer"].copy()
+def drop_transfers(df: pd.DataFrame) -> pd.DataFrame:
+    return df[df["Category"] != "Transfer"].copy()
 
-df_clean["month"] = df_clean["Date"].dt.to_period("M")
 
-monthly = (
-    df_clean
-    .groupby("month")
-    .agg(
-        income=("Amount", lambda x: x[x > 0].sum()),
-        expenses=("Amount", lambda x: abs(x[x < 0].sum()))
+def add_month_column(df: pd.DataFrame, date_column: str = "Date") -> pd.DataFrame:
+    df = df.copy()
+    df["month"] = df[date_column].dt.to_period("M")
+    return df
+
+
+def summarize_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    summary = (
+        df.groupby("month")
+        .agg(
+            income=("Amount", lambda x: x[x > 0].sum()),
+            expenses=("Amount", lambda x: abs(x[x < 0].sum()))
+        )
+        .reset_index()
     )
-    .reset_index()
-)
+    summary["month"] = summary["month"].astype(str)
+    summary["overunder"] = summary["income"] - summary["expenses"]
+    return summary
 
-monthly["month"] = monthly["month"].astype(str)
 
-monthly['overunder'] = monthly['income'] - monthly['expenses']
+def filter_descriptions(df: pd.DataFrame, patterns: list[str]) -> pd.DataFrame:
+    regex = "|".join(patterns)
+    return df[~df["Description"].str.contains(regex, regex=True, na=False)].copy()
 
-# Only expenses
-expenses_df = df_clean[df_clean["Amount"] < 0].copy()
 
-# Sum expenses by Month and Category
-monthly_category_df = (
-    expenses_df
-    .groupby(["month", "Category"], as_index=False)["Amount"]
-    .sum()
-)
-monthly_category_df.sort_values(by="month", ascending=True, inplace=True)
-
-patterns = ["Therapy Trails", "Childcare"]
-
-regex = "|".join(patterns)
-
-filtered_df = df_clean[~df_clean["Description"].str.contains(regex, regex=True, na=False)]
-
-filtered_monthly = (
-    filtered_df
-    .groupby("month")
-    .agg(
-        income=("Amount", lambda x: x[x > 0].sum()),
-        expenses=("Amount", lambda x: abs(x[x < 0].sum()))
+def summarize_expenses_by_category(df: pd.DataFrame) -> pd.DataFrame:
+    expenses = df[df["Amount"] < 0].copy()
+    summary = (
+        expenses.groupby(["month", "Category"], as_index=False)["Amount"].sum()
     )
-    .reset_index()
-)
+    return summary.sort_values(by="month", ascending=True).reset_index(drop=True)
 
-filtered_monthly["month"] = filtered_monthly["month"].astype(str)
 
-filtered_monthly['overunder'] = filtered_monthly['income'] - filtered_monthly['expenses']
+def post_to_sql(df: pd.DataFrame, table_name: str, engine) -> None:
+    df.to_sql(table_name, engine, if_exists="replace", index=False)
 
-total = monthly['income'].sum() - monthly['expenses'].sum()
 
-filtered_total = filtered_monthly['income'].sum() - filtered_monthly['expenses'].sum()
+def main() -> dict[str, pd.DataFrame]:
+    project_root = Path(__file__).resolve().parent
+    engine = build_engine(DBUSER, DBPSWD, DBIP, DB_PORT, DB_NAME)
 
-post_to_sql(df_clean, "clean")
+    full_df = read_budget_files(project_root)
+    full_df = normalize_dates(full_df)
+    clean_df = drop_transfers(full_df)
+    clean_df = add_month_column(clean_df)
 
-post_to_sql(full, "full")
+    monthly_summary = summarize_monthly(clean_df)
+    filtered_df = filter_descriptions(clean_df, FILTER_PATTERNS)
+    filtered_monthly = summarize_monthly(filtered_df)
+    monthly_category_df = summarize_expenses_by_category(clean_df)
 
-post_to_sql(filtered_df, "filtered")
+    post_to_sql(clean_df, "clean", engine)
+    post_to_sql(full_df, "full", engine)
+    post_to_sql(filtered_df, "filtered", engine)
+    post_to_sql(filtered_monthly, "filtered_monthly", engine)
+    post_to_sql(monthly_summary, "monthly", engine)
+    post_to_sql(monthly_category_df, "month_by_category", engine)
 
-post_to_sql(filtered_monthly, "filtered_monthly")
+    return {
+        "monthly_summary": monthly_summary,
+        "filtered_monthly": filtered_monthly,
+        "monthly_category": monthly_category_df,
+    }
 
-post_to_sql(monthly, "monthly")
 
-post_to_sql(monthly_category_df, "month_by_category")
+if __name__ == "__main__":
+    main()
