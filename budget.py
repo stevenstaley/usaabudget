@@ -69,6 +69,7 @@ def summarize_expenses_by_category(df: pd.DataFrame) -> pd.DataFrame:
     summary = (
         expenses.groupby(["month", "Category"], as_index=False)["Amount"].sum()
     )
+    summary["time"] = summary["month"].dt.to_timestamp()
     return summary.sort_values(by="month", ascending=True).reset_index(drop=True)
 
 
@@ -106,3 +107,5 @@ def main() -> dict[str, pd.DataFrame]:
 
 if __name__ == "__main__":
     main()
+
+print("Budget data processed and uploaded to SQL database.")
