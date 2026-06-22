@@ -1,7 +1,7 @@
 import pandas as pd
 from sqlalchemy import create_engine
 import os
-from secrets import DBUSER, DBPSWD, DBIP
+from stuff import DBUSER, DBPSWD, DBIP
 
 DB_PORT = "3306"
 DB_NAME = "budget"
