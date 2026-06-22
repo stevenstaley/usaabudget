@@ -2,3 +2,5 @@ bills.csv
 savings.csv
 main.csv
 stuff.py
+__pycache__
+.ipynb_checkpoints
